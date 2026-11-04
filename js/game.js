@@ -11,7 +11,10 @@ let coins = 0;
 let items = { coins: new Set(), chests: new Set() };
 let powerupState = { fiftyUsed: false, swapUsed: false, pathHintActive: false, pathHintEnd: 0 };
 let examMode = false;
-let onAnswer = null; // handler jawaban khusus (peti, latihan lemah); null = answer() biasa
+  let examTimeLeft = 0;
+  let examStartTime = 0;
+  let examTimeLeftDisplay = null;
+  let onAnswer = null; // handler jawaban khusus (peti, latihan lemah); null = answer() biasa
 
 // DOM elements
 const $ = s => document.querySelector(s);
@@ -32,6 +35,7 @@ const CONFIG = {
   gateCount: 6,
   minGateGap: 4,
   loop: 0.04,
+  timer: false,
   levels: {
     1: { name: 'Latihan', w: 9, h: 9, fog: 0, tiers: [1, 1, 2], pass: 9, coins: 6, chests: 1, minPath: 35 },
     2: { name: 'TKA Standar', w: 11, h: 11, fog: 3, tiers: [1, 2, 3], pass: 10, coins: 8, chests: 2, minPath: 50 },
@@ -494,14 +498,55 @@ function nextQ() {
   powerupState.swapUsed = false;
   let di, t;
   if (ses.m === 'd') {
-    di = gates[ses.gi].dom;
-    // Tier dasar untuk langkah gerbang ini (jangan `let t` lagi: itu menutupi `t` luar)
-    t = lv.tiers[ses.step];
-    // Adjust tier based on door difficulty
-    const diffKey = ses.k + ':diff';
-    const diff = doorG.get(diffKey);
-    if (diff === 'easy') t = Math.max(1, t - 1);
-    else if (diff === 'hard') t = Math.min(3, t + 1);
+    // Boss gate (gate 6) has different question flow: 5 mixed questions
+    if (ses.gi === 5 && gates[ses.gi].boss) {
+      // Boss mode: 5 soal campur dari semua domain, tingkat tertinggi
+      if (ses.step < 5) {
+        // Generate random question from random domain at highest tier
+        const dom = rnd(0, 5);
+        t = 3; // highest tier
+        di = dom;
+        // Make sure we don't repeat the same question immediately
+        let attempts = 0;
+        while (used.has(Q(di, t).q) && attempts < 10) {
+          di = rnd(0, 5);
+          attempts++;
+        }
+        if (attempts >= 10) used.clear();
+        cur = Q(di, t);
+        cur.di = di;
+      } else {
+        // Boss gate passed - open all doors
+        const g = ses.gi;
+        if (!passed[g]) {
+          passed[g] = true;
+          hearts = Math.min(5, hearts + 1);
+          score += 50;
+          // Open all doors in this gate
+          for (const key of gates[g].keys) {
+            opened.add(key);
+          }
+          const domName = DM[gates[g].dom].e;
+          msg += ` 👑 Boss Gerbang Terbuka! Semua pintu terbuka (+1 nyawa).`;
+        } else {
+          opened.add(ses.k);
+          msg += ' 🔓 Pintu terbuka!';
+        }
+        btn = 'Lanjut';
+        const { nx, ny } = ses;
+        fn = () => { hide(); busy = false; enter(nx, ny); };
+        return;
+      }
+    } else {
+      di = gates[ses.gi].dom;
+      // Tier dasar untuk langkah gerbang ini (jangan `let t` lagi: itu menutupi `t` luar)
+      t = lv.tiers[ses.step];
+      // Adjust tier based on door difficulty
+      const diffKey = ses.k + ':diff';
+      const diff = doorG.get(diffKey);
+      if (diff === 'easy') t = Math.max(1, t - 1);
+      else if (diff === 'hard') t = Math.min(3, t + 1);
+    }
   } else {
     [di, t] = xq[ses.i];
   }
@@ -511,6 +556,17 @@ function nextQ() {
   const head = ses.m === 'd'
     ? `Pintu ${d.e} ${d.n} · ${'●'.repeat(ses.step)}${'○'.repeat(3 - ses.step)} (harus 3 benar beruntun)`
     : `Ujian Akhir · soal ${ses.i + 1}/12 · ${d.e} ${d.n}`;
+
+  // Timer for exam mode
+  let timerHtml = '';
+  if (examMode && CONFIG.timer) {
+    const timeLeft = Math.max(0, examTimeLeft - (performance.now() - examStartTime) / 1000);
+    const minutes = Math.max(0, Math.floor(timeLeft / 60));
+    const seconds = Math.max(0, Math.round(timeLeft % 60));
+    timerHtml = `<div class="timer-bar" style="width:100%;height:8px;background:var(--muted);margin-bottom:6px;overflow:hidden"><div style="width:100%;height:100%;background:var(--bad);transition:width .5s"></div></div>
+      <span style="font-size:.8rem;color:var(--muted)">Waktu: ${minutes}:${seconds < 10 ? '0' : ''}${seconds}</span>`;
+    examTimeLeftDisplay.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+  }
 
   // Power-up buttons (only in maze, not in exam)
   let powerupHtml = '';
@@ -526,8 +582,36 @@ function nextQ() {
         ${cur.fig ? `<canvas class="fig" width="260" height="200" style="max-width:100%;height:auto;margin:0 auto 8px;display:block;"></canvas>` : ''}
         <div class="q">${cur.q}</div>
         <div class="opts">${cur.opts.map((o, i) => `<button data-i="${i}"><b>${'ABCD'[i]}.</b> ${o}</button>`).join('')}</div>
+        ${timerHtml}
         ${powerupHtml}
         <div id="fb"></div>`);
+
+  // Start timer if in exam mode
+  if (examMode && CONFIG.timer && ses.m !== 'd') {
+    examStartTime = performance.now();
+    examTimeLeft = 90; // 90 seconds per question
+    startExamTimer();
+  }
+
+  // Start timer if in exam mode
+  if (examMode && CONFIG.timer) {
+    examStartTime = performance.now();
+    examTimeLeft = 90; // 90 seconds per question
+    examTimeLeftDisplay = document.createElement('span');
+    examTimeLeftDisplay.style.fontSize = '.8rem';
+    examTimeLeftDisplay.style.color = 'var(--muted)';
+    // Insert after the timer HTML was added above
+    const timerSpan = ovc.querySelector('.timer-bar + span');
+    if (timerSpan) {
+      ovc.insertBefore(examTimeLeftDisplay, timerSpan.nextSibling);
+    }
+    startExamTimer();
+  } else if (examMode && CONFIG.timer) {
+    // Update display if already running
+    const minutes = Math.max(0, Math.floor(examTimeLeft / 60));
+    const seconds = Math.max(0, Math.round(examTimeLeft % 60));
+    examTimeLeftDisplay.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+  }
 
   // Draw figure if present
   if (cur.fig) {
@@ -541,8 +625,8 @@ function nextQ() {
         const ctx = canvas.getContext('2d');
         ctx.scale(dpr, dpr);
         const css = getComputedStyle(document.documentElement);
-        const color = css.getPropertyValue('--fg').trim() || '#000';
-        const textColor = css.getPropertyValue('--fg').trim() || '#000';
+        const color = css.getPropertyValue('--ink').trim() || '#000';
+        const textColor = css.getPropertyValue('--ink').trim() || '#000';
         drawFigure(ctx, cur.fig, rect.width, rect.height, color, textColor, dpr);
       }
     }, 0);
@@ -570,32 +654,63 @@ function answer(i) {
     btn = ses.i < 12 ? 'Soal berikutnya' : 'Lihat hasil ujian';
     fn = ses.i < 12 ? nextQ : rapor;
   } else if (ok) {
-    ses.step++;
-    score += 10;
-    if (ses.step < 3) {
-      btn = 'Soal berikutnya';
-      fn = nextQ;
-      msg += ` Tinggal ${3 - ses.step} soal lagi.`;
-    } else {
-      // Open ALL doors in this gate (not just the one door)
-      const g = ses.gi;
-      if (!passed[g]) {
-        passed[g] = true;
-        hearts = Math.min(5, hearts + 1);
-        score += 30;
-        // Open all doors in this gate
-        for (const key of gates[g].keys) {
-          opened.add(key);
-        }
-        msg += ` 🔓 Gerbang <b>${DM[gates[g].dom].n}</b> lulus! Semua pintu terbuka (+1 nyawa).`;
+    // Boss gate (gate 6) needs 5 correct out of 5, normal gate needs 3 correct out of 3
+    if (ses.gi === 5 && gates[ses.gi].boss) {
+      ses.stepBoss = (ses.stepBoss || 0) + 1;
+      score += 10;
+      if (ses.stepBoss < 5) {
+        btn = `Soal ${ses.stepBoss + 1}/5`;
+        fn = nextQ;
+        msg += ` Tinggal ${5 - ses.stepBoss} soal lagi.`;
       } else {
-        // Gate already passed, just open this door
-        opened.add(ses.k);
-        msg += ' 🔓 Pintu terbuka!';
+        // Boss gate passed - open all doors
+        const g = ses.gi;
+        if (!passed[g]) {
+          passed[g] = true;
+          hearts = Math.min(5, hearts + 1);
+          score += 50;
+          // Open all doors in this gate
+          for (const key of gates[g].keys) {
+            opened.add(key);
+          }
+          msg += ` 👑 Boss Gerbang Terbuka! Semua pintu terbuka (+1 nyawa).`;
+        } else {
+          // Gate already passed, just open this door
+          opened.add(ses.k);
+          msg += ' 🔓 Pintu terbuka!';
+        }
+        btn = 'Lanjut';
+        const { nx, ny } = ses;
+        fn = () => { hide(); busy = false; enter(nx, ny); };
       }
-      btn = 'Lanjut';
-      const { nx, ny } = ses;
-      fn = () => { hide(); busy = false; enter(nx, ny); };
+    } else {
+      ses.step++;
+      score += 10;
+      if (ses.step < 3) {
+        btn = 'Soal berikutnya';
+        fn = nextQ;
+        msg += ` Tinggal ${3 - ses.step} soal lagi.`;
+      } else {
+        // Open ALL doors in this gate (not just the one door)
+        const g = ses.gi;
+        if (!passed[g]) {
+          passed[g] = true;
+          hearts = Math.min(5, hearts + 1);
+          score += 30;
+          // Open all doors in this gate
+          for (const key of gates[g].keys) {
+            opened.add(key);
+          }
+          msg += ` 🔓 Gerbang <b>${DM[gates[g].dom].n}</b> lulus! Semua pintu terbuka (+1 nyawa).`;
+        } else {
+          // Gate already passed, just open this door
+          opened.add(ses.k);
+          msg += ' 🔓 Pintu terbuka!';
+        }
+        btn = 'Lanjut';
+        const { nx, ny } = ses;
+        fn = () => { hide(); busy = false; enter(nx, ny); };
+      }
     }
   } else {
     hearts--;
@@ -628,6 +743,8 @@ function answer(i) {
 function startExam() {
   busy = true;
   examMode = true;
+  examTimeLeft = 90;
+  examStartTime = performance.now();
   xr = DM.map(() => 0);
   xq = [];
   for (let r = 1; r <= 2; r++) shuf([0, 1, 2, 3, 4, 5]).forEach(d => xq.push([d, lv.tiers[r]]));
@@ -635,6 +752,7 @@ function startExam() {
   show(`<h2>🏁 Gerbang Ujian Akhir</h2>
         <p>Simulasi TKA: <b>12 soal</b> (2 soal tiap kompetensi). Kamu lulus jika benar minimal <b>${lv.pass}/12</b>. Jika belum lulus, kamu mengulang dengan soal baru.</p>
         <p style="font-size:0.85rem;opacity:0.7">⚠️ Power-up dinonaktifkan di ujian akhir</p>
+        <p>⏱️ 90 detik per soal</p>
         <button class="go" id="nx">Mulai ujian</button>`);
   $('#nx').onclick = nextQ;
 }
@@ -650,9 +768,7 @@ function rapor() {
   if (!ok) { hearts--; hud(); }
   const over = !ok && hearts <= 0;
 
-  // Save progress if passed
-  if (ok) {
-    const saved = storageLoad();
+  const saved = storageLoad();
     const level = Object.keys(CONFIG.levels).find(k => CONFIG.levels[k] === lv);
     const levelNum = parseInt(level);
     
@@ -679,19 +795,23 @@ function rapor() {
       s: m.s + rep[i].s
     }));
     
-    // Save coins
+    // Save coins (always, even if failed)
     saved.coins = coins;
     
     storageSave(saved);
-    // Start confetti celebration
-    startConfetti();
-    sfxLevelUp();
-  }
+    // Start confetti celebration (only if passed)
+    if (ok) {
+      startConfetti();
+      sfxLevelUp();
+    }
 
   show(`<h2>${ok ? '🎓 LULUS Simulasi TKA!' : '📋 Belum lulus'}</h2>
         <p style="text-align:center;font-size:1.3rem;margin:4px"><b>${tot}/12</b> benar (minimal ${lv.pass})</p>
         ${rows}
         <p>${weak.length ? `Perlu diulang: <b>${weak.join(', ')}</b>.` : 'Semua kompetensi aman. Hebat!'}${ok ? '' : ' Nyawa −1.'}</p>
+        <p style="text-align:center;margin:8px 0">
+          <button class="go" id="copy-rapor">📋 Salin ringkasan</button>
+        </p>
         ${ok ? lvBtns() : `<button class="go" id="nx">${over ? 'Main lagi' : 'Ulangi ujian (soal baru)'}</button>`}`);
   if (!ok) $('#nx').onclick = () => over ? menu('Nyawa habis 💔') : startExam();
 }
@@ -791,16 +911,26 @@ function swapQuestion() {
   const di = gates[ses.gi].dom;
   const t = lv.tiers[ses.step];
   const oldQ = cur.q;
-  cur = Q(di, t);
+  let curNew = Q(di, t);
   // Ensure different question
-  if (cur.q === oldQ) cur = Q(di, t);
+  if (curNew.q === oldQ) curNew = Q(di, t);
+  cur = curNew;
   cur.di = di;
   powerupState.fiftyUsed = false; // Reset 50:50 for new question
   const d = DM[di];
   const head = `Pintu ${d.e} ${d.n} · ${'●'.repeat(ses.step)}${'○'.repeat(3 - ses.step)} (harus 3 benar beruntun)`;
+  const figHtml = cur.fig ? `<canvas class="fig" width="260" height="200" style="max-width:100%;height:auto;margin:0 auto 8px;display:block;"></canvas>` : '';
+  const powerupHtml = ses.m === 'd' && !examMode
+    ? `<div class="powerups" style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
+       <button class="go" data-power="fifty" ${coins < CONFIG.price.fifty ? 'disabled' : ''}>50:50 (${CONFIG.price.fifty}🪙)</button>
+       <button class="go" data-power="swap" ${coins < CONFIG.price.swap ? 'disabled' : ''}>Ganti (${CONFIG.price.swap}🪙)</button>
+       <button class="go" data-power="path" ${coins < CONFIG.price.path ? 'disabled' : ''}>Jalur (${CONFIG.price.path}🪙)</button>
+     </div>` : '';
   show(`<div class="tag" style="color:${d.c}">${head}</div>
+        ${figHtml}
         <div class="q">${cur.q}</div>
         <div class="opts">${cur.opts.map((o, i) => `<button data-i="${i}"><b>${'ABCD'[i]}.</b> ${o}</button>`).join('')}</div>
+        ${powerupHtml}
         <div id="fb"></div>`);
   answered = false;
 }
@@ -825,6 +955,24 @@ function menu(title) {
   if (typeof title !== 'string') title = undefined; // cegah event klik jadi judul
   const saved = storageLoad();
   
+  // Daily mission: seed based on today's date
+  const today = new Date().toISOString().split('T')[0];
+  const dailyEl = document.getElementById('daily-mission');
+  if (dailyEl) {
+    const saved = storageLoad();
+    const dailyDone = saved.daily.date === today && saved.daily.done;
+    dailyEl.style.display = 'none';
+    if (!dailyDone) {
+      dailyEl.style.display = 'block';
+      dailyEl.innerHTML = `<h3>🎯 Misi Harian</h3>
+            <p>Seed hari ini: ${today}</p>
+            <button class="go" id="start-daily">Mulai Misi</button>`;
+      setTimeout(() => {
+        document.getElementById('start-daily').onclick = startDailyMission;
+      }, 0);
+    }
+  }
+
   // Build mastery display
   const masteryHtml = saved.mastery.map((m, i) => {
     const d = DM[i];
@@ -837,10 +985,15 @@ function menu(title) {
   show(`<h2>${title || '🚪 Labirin Penguasa TKA'}</h2>
         <p>Cari jalan dari 🧒 ke 🏁. Labirin punya <b>6 gerbang kompetensi</b> (bilangan, pecahan & perbandingan, geometri, pengukuran, data, penalaran). <b>Semua jalur</b> melewati pintu di tiap gerbang.</p>
         <p>Tiap pintu: <b>3 soal benar beruntun</b>. Salah = nyawa −1 dan ulang dari soal 1. Di finish ada <b>ujian akhir 12 soal</b>.</p>
+        <div id="daily-mission" style="margin:12px 0;text-align:left"></div>
         ${lvBtns()}
         <div class="menu-extras">
           <h3>📊 Kompetensi kamu</h3>
           <div class="mastery-container">${masteryHtml}</div>
+          <label style="display:flex;align-items:center;gap:6px;margin-top:8px;cursor:pointer">
+            <input type="checkbox" id="timer-toggle" ${saved.settings.timer ? 'checked' : ''} style="margin:0;width:18px;height:18px">
+            <span style="font-size:.8rem">Timer ujian 90s</span>
+          </label>
           <button class="go" id="weak-practice" style="margin-top:8px">🎯 Latihan Topik Lemah</button>
           <button class="go" id="reset-progress" style="margin-top:8px;background:#e5484d">🗑️ Reset Progres</button>
         </div>`);
@@ -851,6 +1004,39 @@ function menu(title) {
     if (weakBtn) weakBtn.onclick = startWeakPractice;
     const resetBtn = document.getElementById('reset-progress');
     if (resetBtn) resetBtn.onclick = confirmResetProgress;
+    const timerToggle = document.getElementById('timer-toggle');
+    if (timerToggle) {
+      timerToggle.onclick = () => {
+        const enabled = !timerToggle.checked;
+        storagePatch({ settings: { ...saved.settings, timer: enabled } });
+        hud();
+      };
+    }
+    const copyRaporBtn = document.getElementById('copy-rapor');
+    if (copyRaporBtn) {
+      copyRaporBtn.onclick = () => {
+        const tot = xr.reduce((a, b) => a + b);
+        const ok = tot >= lv.pass;
+        const weak = DM.filter((d, i) => xr[i] < 2).map(d => d.n);
+        const summary = `Labirin Penguasa TKA - Rapor Akhir\n`
+                      + `Level: ${Object.keys(CONFIG.levels).find(k => CONFIG.levels[k] === lv) || 'unknown'}\n`
+                      + `Skor: ${tot}/12 (minimal ${lv.pass} lulus)\n`
+                      + `Status: ${ok ? 'LULUS' : 'Belum lulus'}\n`
+                      + `Kompetensi:\n`;
+        const saved = storageLoad();
+        const masteryHtml = saved.mastery.map((m, i) => {
+          const d = DM[i];
+          const total = m.c + m.s;
+          const pct = total > 0 ? Math.round((m.c / total) * 100) : 0;
+          return `- ${d.e} ${d.n}: ${m.c} benar/${total} (${pct}%)`;
+        }).join('\n');
+        const text = summary + masteryHtml + `\n${weak.length ? 'Topik lemah: ' + weak.join(', ') : 'Semua aman'}\nKoin: ${coins}`;
+        navigator.clipboard.writeText(text).then(() => {
+          copyRaporBtn.textContent = '✅ Disalin!';
+          setTimeout(() => { copyRaporBtn.textContent = '📋 Salin ringkasan'; }, 2000);
+        });
+      };
+    }
   }, 0);
 }
 
@@ -957,6 +1143,74 @@ function confirmResetProgress() {
 function doResetProgress() {
   storageReset();
   menu('Progres direset. Selamat bermain!');
+}
+
+/** Timer untuk ujian akhir */
+function startExamTimer() {
+  examTimeLeftDisplay = document.createElement('span');
+  examTimeLeftDisplay.style.position = 'absolute';
+  examTimeLeftDisplay.style.top = '100px';
+  examTimeLeftDisplay.style.right = '10px';
+  examTimeLeftDisplay.style.fontSize = '.8rem';
+  examTimeLeftDisplay.style.color = 'var(--muted)';
+  ovc.appendChild(examTimeLeftDisplay);
+  updateExamTimer();
+}
+
+/** Update tampilan timer ujian */
+function updateExamTimer() {
+  if (examTimeLeft > 0) {
+    const minutes = Math.floor(examTimeLeft / 60);
+    const seconds = examTimeLeft % 60;
+    examTimeLeftDisplay.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+    examTimeLeft--;
+    setTimeout(updateExamTimer, 1000);
+  } else {
+    // Waktu habis - jawab salah
+    examTimeLeftDisplay.textContent = '0:00';
+    if (!answered) {
+      answered = true;
+      // Handle time out as wrong answer
+      const buttons = ovc.querySelectorAll('.opts button');
+      buttons[cur.a].classList.add('bad');
+      rep[cur.di].s++;
+      hearts--;
+      score -= 10;
+      sfxWrong();
+      showFloatingScore('+0 (waktu habis)', 'var(--bad)');
+      
+      const msg = `⏰ Waktu habis! Jawaban benar: <b>${cur.opts[cur.a]}</b>.`;
+      $('#fb').innerHTML = `${msg}<br>💡 ${cur.exp}<button class="go" id="nx">Soal berikutnya</button>`;
+      $('#nx').onclick = () => {
+        onAnswer = null;
+        hide();
+        busy = false;
+        nextQ();
+      };
+    }
+  }
+}
+
+/** Simple hash for daily mission seed */
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    hash = hash & hash;
+  }
+  return hash;
+}
+
+/** Start daily mission with date-based seed */
+function startDailyMission() {
+  const today = new Date().toISOString().split('T')[0];
+  setSeed(hashCode(today));
+  clearSeed();
+  const saved = storageLoad();
+  saved.coins = (saved.coins || 0) + 10;
+  saved.daily = { date: today, done: true };
+  storageSave(saved);
+  menu(`✅ Misi Harian Selesai! +10 🪙. Koin total: ${saved.coins}.`);
 }
 
 // ===== UI HELPERS =====

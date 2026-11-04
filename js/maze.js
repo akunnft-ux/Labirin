@@ -145,7 +145,8 @@ function createGates({ dist, L, lv, DM }) {
 
   for (let k = 1; k <= 6; k++) {
     const D = Math.round(L * k / 7);
-    const g = { dom: order[k - 1], D, keys: [] };
+    const isBoss = k === 6;
+    const g = { dom: order[k - 1], D, keys: [], boss: isBoss };
     for (let y = 0; y < lv.h; y++) {
       for (let x = 0; x < lv.w; x++) {
         for (const d of ['E', 'S']) {

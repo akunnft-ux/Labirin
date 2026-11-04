@@ -332,3 +332,79 @@ const CONFIG = {
 - Jangan mengubah jawaban/rumus soal lama tanpa tes yang membuktikan benar.
 - Jangan mematikan jaminan "semua jalur lewat pintu" demi membuat labirin terasa lebih bebas.
 - Jangan menyimpan data pribadi anak (nama, dsb.). Progres hanya angka di `localStorage` perangkat.
+
+---
+
+## 6. Hasil Audit DevOps (4 November 2026)
+
+Bagian ini **tambahan**; isi bagian 0–5 di atas tidak diubah. Audit dilakukan atas arsip `Labirin_tar.gz` (commit `bf7b4e0`, "Initial commit", 3 Nov 2026). Semua 4 suite tes (`node tests/run.js`) hijau, tetapi tes tidak menyentuh logika di `game.js`, sehingga bug di bawah lolos.
+
+**Cara verifikasi:** butir bertanda **[DIUJI]** dibuktikan dengan menjalankan fungsi asli (diambil dari `js/*.js`) di Node (`vm`). Butir bertanda **[DARI KODE]** disimpulkan dari pembacaan kode dan belum dijalankan di browser sungguhan.
+
+### 6.1 Ringkasan proyek (kondisi sekarang)
+
+| Aspek | Keadaan |
+|---|---|
+| Status | Tahap 0–6 selesai; Tahap 7 belum |
+| Ukuran | ±4.600 baris; `game.js` 1.431, `questions.js` 823, `maze.js` 271, `storage.js` 151, `audio.js` 118, `util.js` 63 |
+| Bank soal | 6 domain × 8 generator = 48 generator; dari 27.000 sampel: 21.373 unik (79%), 4.075 bergambar (15%) |
+| Level | 9×9 (minPath 35, lulus 9/12), 11×11 berkabut 3 (50, 10/12), 13×13 berkabut 2 (70, 11/12) |
+| Penyimpanan | `localStorage` kunci `labirin.v3` (`unlocked`, `stars`, `bestScore`, `mastery`, `coins`, `settings`, `daily`); `daily` dan `settings.timer` belum dipakai (disiapkan untuk Tahap 7) |
+| Deploy | GitHub Pages (`akunnft-ux/Labirin`), tanpa CI, tanpa `package.json` |
+
+### 6.2 Temuan bug (urut tingkat keparahan)
+
+| # | Temuan | Bukti | Status |
+|---|---|---|---|
+| B1 | **Tab hang** saat power-up "Jalur" dipakai. `drawPathHint()` berjalan mundur dari finish memakai jarak BFS dari (0,0), bukan dari pemain. Jika pemain tidak berada di jalur start→finish, loop `while (tx !== cx \|\| ty !== cy)` tidak pernah berhenti. | Berdiri di depan pintu nyata: macet di **1.175 dari 2.594** posisi (**45,3%**) | [DIUJI] |
+| B2 | **Tap-to-move salah jalur.** `findPathTo()` punya akar masalah yang sama (BFS dari (0,0)). Cabang "berhenti sebelum pintu terkunci" juga mengembalikan potongan jalur di *seberang* pintu, bukan sebelum pintu. | Hanya **32,6%** jalur valid (1.291 dari 3.955); 2.664 jalur tidak bersambung | [DIUJI] |
+| B3 | **Labirin tidak pernah punya loop.** `CONFIG.levels` di `game.js` tidak punya field `loop`, sehingga `gen(w, h, undefined)` → `Math.round(NaN)` → loop tambahan tidak jalan. Konfigurasi level juga dobel (`LV` di `maze.js` dan `CONFIG.levels` di `game.js`) dan sudah tidak sinkron. | 11×11: rata-rata **120** sisi terbuka (pohon rentang murni) vs **125** dengan `LV` | [DIUJI] |
+| B4 | **Pintu hantu.** `createGates()` tidak menerima `cells`; cek `dist[y][x][d]` selalu `undefined`, sehingga key pintu bisa menempel di tembok. Pintu itu tetap digambar dan ikut diberi label mudah/sulit. | **8,3%** key pintu (357 dari 4.299); **197 dari 300** labirin punya ≥ 1 pintu hantu | [DIUJI] |
+| B5 | **Reset Progres tidak tuntas** sebelum halaman di-reload. `load()` mengembalikan `{...DEFAULT_DATA}` (shallow copy) sehingga `stars`/`mastery` dipakai bersama; mutasi di `rapor()` dan `handleWpAnswer()` ikut mengubah `DEFAULT_DATA`. | Setelah mutasi lalu `reset()`: `stars` tetap `{"1":3,...}` dan `mastery[0]` tetap `{"c":99,"s":1}` | [DIUJI] |
+| B6 | **Gambar bangun tak terlihat di mode gelap.** `drawFigure` memakai `--fg` yang tidak ada di `style.css` (yang ada `--ink`); warna jatuh ke `#000` di atas kartu `#1b2547`. | `grep --fg style.css` kosong | [DARI KODE] |
+| B7 | **Power-up 50:50 tak terlihat bekerja.** Kelas `.hidden` tidak ada di `style.css`; tombol hanya `disabled` tanpa perubahan tampilan, sementara koin terpotong. | `grep hidden style.css` hanya cocok `overflow:hidden` | [DARI KODE] |
+| B8 | **Power-up "Ganti soal" merusak soal pengganti:** gambar bangun tidak dirender, tombol power-up hilang, dan tingkat mengabaikan label mudah/sulit pintu (memakai `lv.tiers[ses.step]` saja). | `swapQuestion()` memanggil `show()` tanpa figur/power-up | [DARI KODE] |
+| B9 | **Koin dan mastery hanya disimpan saat lulus ujian** (`rapor()`). Pemain bisa membeli power-up lalu sengaja gagal/keluar sehingga koin kembali; mastery dari sesi gagal hilang. | Alur `rapor()` | [DARI KODE] |
+| B10 | Kecil: `hearts` dibatasi `Math.min(5, ...)` hardcode (bukan `CONFIG.hearts`); `hud()` memanggil `storageLoad()` tiap render tanpa memakainya; `pickWeakTopics` dan `generateWeakTopicQuestions` memakai `Math.random` (bukan `rand()` yang bisa di-seed); `settings.vibrate` tidak punya tombol di UI; huruf kapital WASD (CapsLock) tidak ditangani. | — | [DARI KODE] |
+
+**Yang terbukti baik:** jaminan "semua jalur lewat pintu" **utuh** (0 dari 300 labirin punya jalur tanpa pintu, diuji ulang dengan konfigurasi `LV`); 4 suite tes hijau; bank soal bersih dari `Pilihan N`/`NaN`/negatif.
+
+### 6.3 Kebersihan repo dan dokumentasi
+
+- Git hanya punya **1 commit**, sedangkan `PROGRESS.md` menyebut `1f36b55`, `adf995f`, `3034bd8` dan banyak "TBD". Tahap 2 tidak punya bagian sendiri di `PROGRESS.md`; blok `CONFIG` di sana tercetak dobel.
+- `.git/config`: branch `main` ber-`merge = refs/heads/master` (tidak konsisten).
+- `script.js` (25 KB) adalah monolit lama yang tidak dimuat `index.html`; `debug.html` ikut ter-deploy.
+- `PROGRESS.md` menaruh `snapshot.json` di root padahal ada di `tests/`; folder `tests/` tidak tercatat di diagram strukturnya. `CATATAN-AGENT.md` (butir daftar periksa bagian 4) tidak ada.
+- Tidak ada CI; tes hanya jalan jika dijalankan manual.
+- `tests/browser-load.test.js` hanya memastikan file termuat dan `init()` tidak melempar error; tidak ada tes perilaku untuk `game.js`.
+
+### 6.4 TAHAP 8: Perbaikan hasil audit
+
+Kerjakan **sebelum** Tahap 7. Aturan bagian 1 dan 5 tetap berlaku (terutama: jangan merusak jaminan "semua jalur lewat pintu"). Satu butir = satu commit.
+
+**Tugas**
+1. **B1 + B2 (jalur dari posisi pemain).** Buat fungsi murni di `maze.js`, mis. `findPath(cells, sx, sy, tx, ty, blockedKeys)`: BFS dari `(sx, sy)`, pintu terkunci dianggap tembok, mengembalikan jalur bersambung atau `null`. Pakai di `findPathTo()` (tap-to-move; jika target di balik pintu, jalan sampai sel sebelum pintu) dan `drawPathHint()` (hint berakhir di pintu terkunci terdekat bila finish belum terjangkau). Hapus semua loop mundur-dari-(0,0). Beri batas iterasi pengaman.
+2. **B3 (loop).** Satukan sumber konfigurasi: `game.js` memakai satu objek level (hapus `LV` ganda atau jadikan `CONFIG.levels` satu-satunya sumber) dan setiap level membawa `loop` (disarankan `0.04`). Tambah tes yang gagal bila `gen()` menerima `loop` bukan angka.
+3. **B4 (pintu hantu).** Ubah `createGates` agar menerima `cells` dan melewati sisi yang masih tembok. Tambah tes: untuk 300 labirin per level, tidak ada key pintu pada sisi bertembok, dan jaminan "semua jalur lewat pintu" tetap lolos.
+4. **B5 (storage).** `load()` mengembalikan salinan dalam (`structuredClone` atau `JSON.parse(JSON.stringify())`) untuk `DEFAULT_DATA`, termasuk `mastery` dan `settings`. Tambah tes: mutasi hasil `load()` tidak mengubah `DEFAULT_DATA`, dan `reset()` lalu `load()` selalu bersih.
+5. **B6, B7, B8 (UI).** Ganti `--fg` dengan `--ink` di `drawFigure`; tambah `.hidden{visibility:hidden}` (atau `opacity:.25`) di `style.css`; ekstrak satu fungsi `renderQuestion(q, {withPowerups, head})` yang dipakai `nextQ()` dan `swapQuestion()` (figur, power-up, dan tingkat pintu ikut terbawa).
+6. **B9 (simpan).** Simpan `coins` dan `mastery` saat sesi berakhir (lulus, kalah, atau kembali ke menu), bukan hanya saat lulus ujian.
+7. **B10 + kebersihan.** Rapikan butir kecil B10; hapus atau pindahkan `script.js` lama dan `debug.html` ke `docs/` atau `dev/`; sinkronkan `PROGRESS.md` dengan riwayat git yang sebenarnya; samakan tracking branch (`main`); buat `CATATAN-AGENT.md`.
+8. **Tes perilaku `game.js`.** Perluas pola `vm` di `browser-load.test.js`: simulasikan pemain di setiap sel dekat pintu lalu panggil `findPathTo`/`drawPathHint`; simulasikan Reset Progres; pastikan tidak ada loop tak berujung (gunakan batas iterasi).
+9. **CI.** Tambah `.github/workflows/test.yml` yang menjalankan `node tests/run.js` pada setiap push dan pull request (Node 22, tanpa dependensi).
+
+**Selesai jika:**
+- `node tests/run.js` hijau, termasuk tes baru di atas.
+- Pada simulasi seperti 6.2, B1 = 0 macet, B2 = 100% jalur valid, B3 = rata-rata sisi 11×11 mendekati 125, dan B4 = 0 pintu hantu.
+- Jaminan "semua jalur lewat pintu": 0 dari 1.500 labirin melanggar.
+- Manual: 50:50 terlihat menyembunyikan 2 opsi; gambar bangun terbaca di mode gelap; Ganti soal tetap menampilkan gambar dan power-up; Reset Progres langsung bersih tanpa reload.
+
+**Commit:** satu per butir, mis. `fix(maze): jalur BFS dari posisi pemain`, `fix(maze): loop level terbaca dari satu CONFIG`, `fix(storage): salinan dalam DEFAULT_DATA`, `ci: jalankan tes di GitHub Actions`.
+
+### 6.5 Tambahan daftar periksa akhir (bagian 4)
+
+- [ ] Tidak ada tab hang saat memakai "Jalur" dari posisi mana pun (termasuk jalan buntu)
+- [ ] Ketuk-untuk-jalan benar dari sel mana pun ke sel mana pun yang terjangkau
+- [ ] Tidak ada pintu yang tergambar di atas tembok
+- [ ] Reset Progres langsung bersih tanpa reload halaman
+- [ ] Workflow CI hijau di GitHub
